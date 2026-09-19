@@ -37,6 +37,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_NONE_DEFAULT,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_PRE_ANNOUNCE_CHIME_URL,
 )
@@ -53,7 +54,7 @@ from music_assistant.helpers.tts import (
     resolve_tts_stream_path,
 )
 from music_assistant.helpers.util import TaskManager, validate_announcement_chime_url
-from music_assistant.models.player import Player
+from music_assistant.models.player import AnnouncementFeature, Player
 
 from .constants import PlayerLockPurpose
 from .helpers import AnnounceData, handle_player_command
@@ -270,7 +271,9 @@ class AnnouncementsMixin:
                 pre_announce,
                 url,
             )
-            announce_player = await self._resolve_ready_announce_player(player, render, url)
+            announce_player = await self._resolve_ready_announce_player(
+                player, render, url, volume_level
+            )
             native_announce_support = announce_player is not None
             if announce_player is None:
                 announce_player = player
@@ -312,28 +315,37 @@ class AnnouncementsMixin:
         :param player_id: The player the announcement is played on.
         :param volume_override: Volume level that overrides the configured strategy.
         """
+        player = self.get_player(player_id)
+        # a player whose native announcement ignores the level defaults to no adjustment
+        default_strategy = CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.default_value
+        if player is not None and (
+            AnnouncementFeature.SUPPORTS_VOLUME not in player.announcement_features
+        ):
+            default_strategy = CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_NONE_DEFAULT.default_value
         volume_strategy = self.mass.config.get_raw_player_config_value(
             player_id,
             CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.key,
-            CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.default_value,
+            default_strategy,
         )
         volume_strategy_volume = self.mass.config.get_raw_player_config_value(
             player_id,
             CONF_ENTRY_ANNOUNCE_VOLUME.key,
             CONF_ENTRY_ANNOUNCE_VOLUME.default_value,
         )
-        if volume_strategy == "none":
-            return None
         volume_level = volume_override
+        if volume_strategy == "none" and volume_override is None:
+            # an explicit override is honoured even under 'none', so a per-announcement
+            # level still applies
+            return None
         if volume_level is None and volume_strategy == "absolute":
             volume_level = int(cast("float", volume_strategy_volume))
         elif volume_level is None and volume_strategy == "relative":
-            if (player := self.get_player(player_id)) and player.state.volume_level is not None:
+            if player and player.state.volume_level is not None:
                 volume_level = int(
                     player.state.volume_level + cast("float", volume_strategy_volume)
                 )
         elif volume_level is None and volume_strategy == "percentual":
-            if (player := self.get_player(player_id)) and player.state.volume_level is not None:
+            if player and player.state.volume_level is not None:
                 percentual = (player.state.volume_level / 100) * cast(
                     "float", volume_strategy_volume
                 )
@@ -358,6 +370,23 @@ class AnnouncementsMixin:
             )
             volume_level = min(int(announce_volume_max), volume_level)
         return None if volume_level is None else int(volume_level)
+
+    def _native_route_ignores_wanted_volume(
+        self, player: Player, announce_player: Player, volume_level: int | None
+    ) -> bool:
+        """
+        Return True if a requested volume cannot be applied by the native announce route.
+
+        The builtin path is used instead, so the level reaches the device volume.
+
+        :param player: The player the announcement is played on.
+        :param announce_player: The player (or linked protocol) that announces natively.
+        :param volume_level: Optional volume level override for the announcement.
+        """
+        return (
+            AnnouncementFeature.SUPPORTS_VOLUME not in announce_player.announcement_features
+            and self.get_announcement_volume(player.player_id, volume_level) is not None
+        )
 
     def _resolve_announce_player(self, player: Player) -> Player | None:
         """
@@ -402,7 +431,7 @@ class AnnouncementsMixin:
         return None
 
     async def _resolve_ready_announce_player(
-        self, player: Player, render: AnnouncementRender, url: str
+        self, player: Player, render: AnnouncementRender, url: str, volume_level: int | None
     ) -> Player | None:
         """
         Return the player that plays the announcement natively, once its audio is ready.
@@ -413,6 +442,7 @@ class AnnouncementsMixin:
         :param player: The player the announcement is played on.
         :param render: The announcement audio being rendered.
         :param url: URL of the announcement, for logging.
+        :param volume_level: Optional volume level override for the announcement.
         """
         if (announce_player := self._resolve_announce_player(player)) is None:
             return None
@@ -428,6 +458,10 @@ class AnnouncementsMixin:
             # Rendering the audio can take a while. An output that announces by mixing
             # the clip into what it is already playing stops offering the feature once
             # that playback ended, and the default implementation takes over.
+            return None
+        if self._native_route_ignores_wanted_volume(player, announce_player, volume_level):
+            # the native route ignores a requested volume, so use the builtin path
+            # instead, which applies the level through the device volume
             return None
         return announce_player
 
@@ -500,7 +534,7 @@ class AnnouncementsMixin:
             announcement_volume = self.get_announcement_volume(player.player_id, volume_level)
             if (
                 announcement_volume is not None
-                and not announce_player.applies_announcement_volume
+                and AnnouncementFeature.APPLIES_VOLUME not in announce_player.announcement_features
                 and not self._output_owns_volume(player, announce_player)
             ):
                 # The level is resolved on the scale of the control that owns the player's
@@ -937,7 +971,11 @@ class AnnouncementsMixin:
         provider_ids: set[str] = set()
         for member in self.iter_group_members(group_player):
             announce_player = self._resolve_announce_player(member)
-            if announce_player is None or not announce_player.coordinates_announcement_start:
+            if (
+                announce_player is None
+                or AnnouncementFeature.COORDINATES_START
+                not in announce_player.announcement_features
+            ):
                 return False
             provider_ids.add(announce_player.provider.instance_id)
         return len(provider_ids) <= 1

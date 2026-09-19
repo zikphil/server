@@ -37,6 +37,7 @@ from music_assistant.constants import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_NONE_DEFAULT,
     CONF_ENTRY_AUTO_PLAY,
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_ENABLE_ICY_METADATA,
@@ -75,6 +76,7 @@ from music_assistant.controllers.config.helpers import _with_translation_owner
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.config_entries import CONF_CONNECTED_PLAYERS, PLAYBACK_TARGET_TYPES
 from music_assistant.helpers.util import validate_announcement_chime_url
+from music_assistant.models.player import AnnouncementFeature
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
@@ -771,10 +773,17 @@ class PlayerConfigMixin:
             ]
             return entries
         # normal player (or stereo pair) config entries
+        # a player whose native announcement ignores the level defaults to no adjustment,
+        # so it never gets an untunable volume bump; opting in routes it via the builtin path
+        strategy_entry = (
+            CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY
+            if AnnouncementFeature.SUPPORTS_VOLUME in player.announcement_features
+            else CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_NONE_DEFAULT
+        )
         entries += [
             icon_entry,
             # add default entries for announce feature
-            CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+            strategy_entry,
             CONF_ENTRY_ANNOUNCE_VOLUME,
             CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
             CONF_ENTRY_ANNOUNCE_VOLUME_MAX,

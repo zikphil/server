@@ -569,8 +569,11 @@ CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY = ConfigEntry(
     category="announcements",
 )
 
-CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.to_dict(), "hidden": True}
+# default variant for players whose native announcement ignores a requested volume:
+# no adjustment out of the box, and choosing any other strategy routes the announcement
+# through the builtin path (which applies the level via the device volume).
+CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_NONE_DEFAULT = ConfigEntry.from_dict(
+    {**CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.to_dict(), "default_value": "none"}
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
@@ -579,9 +582,6 @@ CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
     default_value=85,
     category="announcements",
 )
-CONF_ENTRY_ANNOUNCE_VOLUME_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_ANNOUNCE_VOLUME.to_dict(), "hidden": True}
-)
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
     key=CONF_ANNOUNCE_VOLUME_MIN,
@@ -589,26 +589,12 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
     default_value=15,
     category="announcements",
 )
-CONF_ENTRY_ANNOUNCE_VOLUME_MIN_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_ANNOUNCE_VOLUME_MIN.to_dict(), "hidden": True}
-)
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
     key=CONF_ANNOUNCE_VOLUME_MAX,
     type=ConfigEntryType.INTEGER,
     default_value=75,
     category="announcements",
-)
-CONF_ENTRY_ANNOUNCE_VOLUME_MAX_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_ANNOUNCE_VOLUME_MAX.to_dict(), "hidden": True}
-)
-
-
-HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES = (
-    CONF_ENTRY_ANNOUNCE_VOLUME_HIDDEN,
-    CONF_ENTRY_ANNOUNCE_VOLUME_MIN_HIDDEN,
-    CONF_ENTRY_ANNOUNCE_VOLUME_MAX_HIDDEN,
-    CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY_HIDDEN,
 )
 
 
