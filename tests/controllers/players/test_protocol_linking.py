@@ -12402,3 +12402,124 @@ class TestExternalSourceTakeover:
         controller, sonos_player = TestCanGroupWithExternalSource._build_rig(mock_mass)
 
         assert not controller._is_ma_managed_source(sonos_player, "tv")
+
+
+class TestSharedIpMultiZoneHost:
+    """
+    Identifier matching when several native players live at one IP address.
+
+    A Sonos Amp Multi hosts up to four zones on a single IP address. Each zone has its
+    own player id and its AirPlay endpoint its own device id, so an exact identifier
+    match must decide which zone a protocol player belongs to. The IP address fallback
+    would attach every endpoint to whichever zone is evaluated first.
+    """
+
+    AMP_IP = "192.168.2.17"
+
+    def _register_zones(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> list[MockPlayer]:
+        """Register two zones of one amplifier as native players sharing an IP address."""
+        provider = MockProvider("sonos", mass=mock_mass)
+        zones = [
+            MockPlayer(
+                provider,
+                "RINCON_804AF2304E8C01400",
+                "Kitchen",
+                identifiers={
+                    IdentifierType.MAC_ADDRESS: "80:4A:F2:30:4E:8C",
+                    IdentifierType.UUID: "RINCON_804AF2304E8C01400",
+                    IdentifierType.IP_ADDRESS: self.AMP_IP,
+                },
+            ),
+            MockPlayer(
+                provider,
+                "RINCON_804AF2304E8C01500",
+                "Guest Bathroom",
+                identifiers={
+                    IdentifierType.MAC_ADDRESS: "80:4A:F2:30:4E:8D",
+                    IdentifierType.UUID: "RINCON_804AF2304E8C01500",
+                    IdentifierType.IP_ADDRESS: self.AMP_IP,
+                },
+            ),
+        ]
+        for zone in zones:
+            zone.set_initialized()
+            controller._players[zone.player_id] = zone
+        return zones
+
+    def test_shared_ip_does_not_link_across_zones(self, mock_mass: MagicMock) -> None:
+        """An AirPlay endpoint of one zone is not matched to another zone via the IP."""
+        controller = PlayerController(mock_mass)
+        kitchen, bathroom = self._register_zones(controller, mock_mass)
+        bathroom_airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap804af2304e8d",
+            "Guest Bathroom",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "80:4A:F2:30:4E:8D",
+                IdentifierType.IP_ADDRESS: self.AMP_IP,
+                IdentifierType.AIRPLAY_ID: "ap804af2304e8d",
+            },
+        )
+
+        # the exact MAC match still links the endpoint to its own zone ...
+        assert controller._identifiers_match(bathroom, bathroom_airplay) is True
+        # ... but the shared IP address alone no longer links it to a different zone
+        assert controller._identifiers_match(kitchen, bathroom_airplay) is False
+
+    def test_shared_ip_guard_only_applies_to_multi_player_hosts(self, mock_mass: MagicMock) -> None:
+        """A lone native player keeps matching a protocol player with another MAC by IP."""
+        controller = PlayerController(mock_mass)
+        speaker = MockPlayer(
+            MockProvider("sonos", mass=mock_mass),
+            "RINCON_48A6B8B0FF3301400",
+            "Living Room",
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "48:A6:B8:B0:FF:33",
+                IdentifierType.IP_ADDRESS: "192.168.2.135",
+            },
+        )
+        speaker.set_initialized()
+        controller._players[speaker.player_id] = speaker
+        # e.g. the wired interface's MAC reported by another protocol on the same device
+        airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap48a6b8b0ff34",
+            "Living Room",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "48:A6:B8:B0:FF:34",
+                IdentifierType.IP_ADDRESS: "192.168.2.135",
+            },
+        )
+
+        assert controller._identifiers_match(speaker, airplay) is True
+
+    def test_protocol_players_at_a_shared_ip_are_not_merged(self, mock_mass: MagicMock) -> None:
+        """Two protocol players at the amplifier's IP are not treated as one device."""
+        controller = PlayerController(mock_mass)
+        self._register_zones(controller, mock_mass)
+        kitchen_airplay = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap804af2304e8c",
+            "Kitchen",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.MAC_ADDRESS: "80:4A:F2:30:4E:8C",
+                IdentifierType.IP_ADDRESS: self.AMP_IP,
+            },
+        )
+        bathroom_dlna = MockPlayer(
+            MockProvider("dlna", mass=mock_mass),
+            "uuid:RINCON_804AF2304E8C01500_MR",
+            "Guest Bathroom",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={
+                IdentifierType.UUID: "RINCON_804AF2304E8C01500_MR",
+                IdentifierType.IP_ADDRESS: self.AMP_IP,
+            },
+        )
+
+        assert controller._identifiers_match(kitchen_airplay, bathroom_dlna) is False

@@ -56,7 +56,7 @@ from music_assistant.providers.universal_player.constants import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Coroutine, Iterator
     from typing import Any
 
     from music_assistant_models.player import OutputProtocol
@@ -116,6 +116,14 @@ class ProtocolLinkingMixin:
         ) -> list[Player]: ...
 
         def get_player(self, player_id: str) -> Player | None: ...  # noqa: D102
+
+        def iter_players(  # noqa: D102
+            self,
+            return_unavailable: bool = True,
+            return_disabled: bool = False,
+            provider_filter: str | None = None,
+            return_protocol_players: bool = False,
+        ) -> Iterator[Player]: ...
 
         def unregister(  # noqa: D102
             self,
@@ -1935,6 +1943,18 @@ class ProtocolLinkingMixin:
         ip_a = identifiers_a.get(IdentifierType.IP_ADDRESS)
         ip_b = identifiers_b.get(IdentifierType.IP_ADDRESS)
         if ip_a and ip_b and ip_a == ip_b:
+            if self._ip_hosts_multiple_native_players(ip_a):
+                # several logical players live at this address (the zones of a Sonos
+                # Amp Multi): the address alone cannot tell which of them a protocol
+                # player belongs to, so only an exact identifier match above may link
+                self.logger.log(
+                    VERBOSE_LOG_LEVEL,
+                    "Not matching %s and %s on shared IP %s: multiple native players there",
+                    player_a.display_name,
+                    player_b.display_name,
+                    ip_a,
+                )
+                return False
             mac_a = identifiers_a.get(IdentifierType.MAC_ADDRESS)
             mac_b = identifiers_b.get(IdentifierType.MAC_ADDRESS)
             a_is_real = (
@@ -1962,6 +1982,22 @@ class ProtocolLinkingMixin:
             if a_is_protocol or b_is_protocol:
                 return True
 
+        return False
+
+    def _ip_hosts_multiple_native_players(self, ip_address: str) -> bool:
+        """
+        Return whether more than one native (non-protocol) player lives at an IP address.
+
+        Multi-zone products such as the Sonos Amp Multi expose one player per zone on a
+        single IP address, so the address is not a device identity there.
+        """
+        seen = 0
+        for player in self.iter_players(return_unavailable=True, return_disabled=True):
+            if player.device_info.identifiers.get(IdentifierType.IP_ADDRESS) != ip_address:
+                continue
+            seen += 1
+            if seen > 1:
+                return True
         return False
 
     def _select_best_output_protocol(self, player: Player) -> tuple[Player, OutputProtocol | None]:

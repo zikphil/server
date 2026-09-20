@@ -20,8 +20,8 @@ from urllib.parse import urlparse
 from aiohttp import ClientError
 from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
+from aiosonos.const import DEFAULT_LOCAL_API_PORT, SonosEvent
 from aiosonos.const import EventType as SonosEventType
-from aiosonos.const import SonosEvent
 from aiosonos.exceptions import CannotConnect, ConnectionFailed, FailedCommand
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
@@ -58,6 +58,7 @@ from music_assistant.providers.sonos.const import (
     UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS,
     UPCOMING_ITEMS,
 )
+from music_assistant.providers.sonos.helpers import mac_address_from_player_id
 
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
@@ -112,10 +113,14 @@ class SonosPlayer(Player):
         prov: SonosPlayerProvider,
         player_id: str,
         discovery_info: SonosDiscoveryInfo,
+        port: int = DEFAULT_LOCAL_API_PORT,
     ) -> None:
         """Initialize the SonosPlayer."""
         super().__init__(prov, player_id)
         self.discovery_info = discovery_info
+        # the port of this player's local API: 1443 for a single-zone speaker, but each
+        # zone of a multi-zone amplifier (Sonos Amp Multi) has its own port on a shared IP
+        self.api_port = port
         self.connected: bool = False
         self._listen_task: asyncio.Task[None] | None = None
         self._connect_lock = asyncio.Lock()
@@ -183,7 +188,7 @@ class SonosPlayer(Player):
         assert self.device_info.ip_address is not None  # for type checking
         # connect the player first so we can fail early
         self.client = SonosLocalApiClient(
-            self.device_info.ip_address, self.mass.http_session_no_ssl
+            self.device_info.ip_address, self.mass.http_session_no_ssl, port=self.api_port
         )
         await self._connect(False)
 
@@ -1209,28 +1214,13 @@ class SonosPlayer(Player):
         Extract MAC address from Sonos player_id.
 
         Sonos player_ids follow the format RINCON_XXXXXXXXXXXX01400 where
-        the middle 12 hex characters represent the MAC address.
+        the middle 12 hex characters represent the MAC address and the trailing
+        digits the zone's UPnP port. Zones of a multi-zone amplifier get the last
+        octet incremented per zone, matching their AirPlay endpoints.
 
         :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
         """
-        # Remove RINCON_ prefix if present
-        player_id = self.player_id
-        player_id = player_id.removeprefix("RINCON_")  # Remove "RINCON_"
-
-        # Remove the 01400 suffix (or similar) - should be last 5 chars
-        if len(player_id) >= 17:  # 12 hex chars for MAC + 5 chars suffix
-            mac_hex = player_id[:12]
-        else:
-            return None
-
-        # Validate it looks like a MAC (all hex characters)
-        try:
-            int(mac_hex, 16)
-        except ValueError:
-            return None
-
-        # Format as XX:XX:XX:XX:XX:XX
-        return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+        return mac_address_from_player_id(self.player_id)
 
     @property
     def _sleeps_as_power_off(self) -> bool:
@@ -1270,8 +1260,10 @@ class SonosPlayer(Player):
         """Return whether the player API port answers a TCP connect."""
         try:
             async with asyncio.timeout(1):
-                # 1443 is the port aiosonos' websocket connects to
-                _, writer = await asyncio.open_connection(self.device_info.ip_address, 1443)
+                # the port aiosonos' websocket connects to (1443, or the zone's own port)
+                _, writer = await asyncio.open_connection(
+                    self.device_info.ip_address, self.api_port
+                )
         except OSError, TimeoutError:
             return False
         writer.close()

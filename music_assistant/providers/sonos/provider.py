@@ -28,7 +28,7 @@ from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
-from .helpers import get_primary_ip_address
+from .helpers import get_local_api_port, get_primary_ip_address, parse_manual_address
 from .player import SonosPlayer, SonosQueueWindow
 
 # stands in for "the speaker named no ceiling", so our own window size decides
@@ -95,17 +95,21 @@ class SonosPlayerProvider(PlayerProvider):
         manual_ip_config = cast(
             "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
         )
-        for ip_address in manual_ip_config:
+        for manual_address in manual_ip_config:
+            # a zone of a multi-zone amplifier lives on its own port: host:port
+            ip_address, port = parse_manual_address(manual_address)
             try:
                 # get discovery info from SONOS speaker so we can provide an ID & other info
-                discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, ip_address)
+                discovery_info = await get_discovery_info(
+                    self.mass.http_session_no_ssl, ip_address, port
+                )
             except ClientError as err:
                 self.logger.debug(
-                    "Ignoring %s (manual IP) as it is not reachable: %s", ip_address, str(err)
+                    "Ignoring %s (manual IP) as it is not reachable: %s", manual_address, str(err)
                 )
                 continue
             player_id = discovery_info["device"]["id"]
-            sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
+            sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info, port=port)
             sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
             await sonos_player.setup()
 
@@ -187,9 +191,16 @@ class SonosPlayerProvider(PlayerProvider):
                     cur_address,
                 )
                 sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, cur_address)
+            cur_port = get_local_api_port(info)
+            if cur_port != sonos_player.api_port:
+                sonos_player.logger.debug(
+                    "Port updated from %s to %s", sonos_player.api_port, cur_port
+                )
+                sonos_player.api_port = cur_port
             if not sonos_player.connected and cur_address:
                 self.logger.debug("Player back online: %s", sonos_player.display_name)
                 sonos_player.client.player_ip = cur_address
+                sonos_player.client.player_port = cur_port
                 # schedule reconnect
                 sonos_player.reconnect()
             self.mass.players.trigger_player_update(player_id)
@@ -235,8 +246,12 @@ class SonosPlayerProvider(PlayerProvider):
         address = get_primary_ip_address(info)
         if address is None:
             return
+        # the zones of a multi-zone amplifier (Sonos Amp Multi) share one IP address and
+        # each run their own local API on their own port, so always ask the announced port
+        # rather than assuming 1443: the default port answers for the first zone only
+        port = get_local_api_port(info)
         try:
-            discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, address)
+            discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, address, port)
         except ClientError as err:
             self.logger.debug("Ignoring %s in discovery as it is not reachable: %s", name, str(err))
             return
@@ -247,8 +262,8 @@ class SonosPlayerProvider(PlayerProvider):
                 "Ignoring %s in discovery as it is a passive satellite.", display_name
             )
             return
-        self.logger.debug("Discovered Sonos device %s on %s", name, address)
-        sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
+        self.logger.debug("Discovered Sonos device %s on %s:%s", name, address, port)
+        sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info, port=port)
         sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         await sonos_player.setup()
 
